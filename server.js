@@ -14,8 +14,18 @@ const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 
 // Database connection with retry logic
 const createPool = () => {
+  console.log('🔍 Environment check:');
+  console.log('  NODE_ENV:', process.env.NODE_ENV);
+  console.log('  DATABASE_URL exists:', !!process.env.DATABASE_URL);
+  console.log('  DATABASE_URL length:', process.env.DATABASE_URL?.length || 0);
+  console.log('  CLAUDE_API_KEY exists:', !!process.env.CLAUDE_API_KEY);
+  console.log('  JWT_SECRET:', process.env.JWT_SECRET?.substring(0, 10) + '...');
+  
   if (!process.env.DATABASE_URL) {
     console.error('❌ DATABASE_URL environment variable is not set');
+    console.error('Available env vars:', Object.keys(process.env).filter(key => 
+      key.includes('DATABASE') || key.includes('POSTGRES') || key.includes('PG')
+    ));
     process.exit(1);
   }
 
