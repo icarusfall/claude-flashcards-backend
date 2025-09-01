@@ -12,11 +12,55 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 
-// Database connection
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Database connection with retry logic
+const createPool = () => {
+  if (!process.env.DATABASE_URL) {
+    console.error('❌ DATABASE_URL environment variable is not set');
+    process.exit(1);
+  }
+
+  return new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+  });
+};
+
+let pool;
+
+// Wait for database connection with retries
+const waitForDatabase = async (maxRetries = 10, delay = 5000) => {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      console.log(`🔄 Attempting to connect to database (attempt ${i + 1}/${maxRetries})...`);
+      pool = createPool();
+      
+      // Test the connection
+      const client = await pool.connect();
+      await client.query('SELECT NOW()');
+      client.release();
+      
+      console.log('✅ Database connection established!');
+      return true;
+    } catch (error) {
+      console.error(`❌ Database connection failed (attempt ${i + 1}):`, error.message);
+      
+      if (pool) {
+        await pool.end();
+      }
+      
+      if (i < maxRetries - 1) {
+        console.log(`⏳ Waiting ${delay/1000}s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  console.error('❌ Could not connect to database after maximum retries');
+  return false;
+};
 
 // Auto-migration function
 const runMigrations = async () => {
@@ -99,6 +143,17 @@ const runMigrations = async () => {
     `);
 
     console.log('✅ Database migrations completed successfully!');
+    
+    // Verify tables were created
+    const result = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      ORDER BY table_name;
+    `);
+    
+    console.log('📋 Created tables:', result.rows.map(row => row.table_name).join(', '));
+    
   } catch (error) {
     console.error('❌ Migration failed:', error);
     throw error;
@@ -180,8 +235,27 @@ const checkApiLimits = (user) => {
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Claude Flashcards Backend is running!',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    database: pool ? 'connected' : 'not connected'
   });
+});
+
+// Database health check
+app.get('/health', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT NOW()');
+    res.json({ 
+      status: 'healthy', 
+      database: 'connected',
+      timestamp: result.rows[0].now
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'unhealthy', 
+      database: 'error',
+      error: error.message 
+    });
+  }
 });
 
 // User registration
@@ -525,21 +599,50 @@ app.post('/cards/:cardId/progress', authenticateToken, async (req, res) => {
   }
 });
 
-// Start server with migration
+// Start server with proper database connection
 const startServer = async () => {
   try {
-    // Run migrations first
+    console.log('🚀 Starting Claude Flashcards Backend...');
+    
+    // Wait for database connection
+    const dbConnected = await waitForDatabase();
+    if (!dbConnected) {
+      console.error('❌ Cannot start server without database connection');
+      process.exit(1);
+    }
+    
+    // Run migrations
     await runMigrations();
     
-    // Then start the server
+    // Start the server
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📊 Health check: /health`);
+      console.log(`🗄️  Database: connected`);
     });
+    
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 };
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('🛑 Shutting down gracefully...');
+  if (pool) {
+    await pool.end();
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('🛑 Shutting down gracefully...');
+  if (pool) {
+    await pool.end();
+  }
+  process.exit(0);
+});
 
 // Start everything
 startServer();
