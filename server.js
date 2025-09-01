@@ -48,7 +48,7 @@ app.post('/generate-cards', async (req, res) => {
         max_tokens: 2000,
         messages: [{
           role: 'user',
-          content: `Generate 10 flashcards for: "${prompt}"
+          content: `Generate 25 flashcards for: "${prompt}"
 
 Format as JSON array with this exact structure:
 [
