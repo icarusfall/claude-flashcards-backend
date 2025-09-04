@@ -401,6 +401,41 @@ app.post('/subjects', authenticateToken, async (req, res) => {
   }
 });
 
+// Update subject
+app.put('/subjects/:subjectId', authenticateToken, async (req, res) => {
+  try {
+    const { subjectId } = req.params;
+    const { name, prompt } = req.body;
+
+    if (!name || !prompt) {
+      return res.status(400).json({ error: 'Name and prompt required' });
+    }
+
+    // Check if subject belongs to user
+    const checkResult = await pool.query(
+      'SELECT id FROM subjects WHERE id = $1 AND user_id = $2', 
+      [subjectId, req.user.id]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Update the subject
+    const result = await pool.query(`
+      UPDATE subjects 
+      SET name = $1, prompt = $2
+      WHERE id = $3 AND user_id = $4
+      RETURNING *
+    `, [name, prompt, subjectId, req.user.id]);
+
+    res.json({ subject: result.rows[0] });
+  } catch (error) {
+    console.error('Update subject error:', error);
+    res.status(500).json({ error: 'Failed to update subject' });
+  }
+});
+
 // Generate flashcards for a subject
 app.post('/subjects/:subjectId/generate-cards', generalLimiter, authenticateToken, async (req, res) => {
   try {
