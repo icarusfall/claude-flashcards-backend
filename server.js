@@ -83,7 +83,7 @@ const runMigrations = async () => {
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
-        auth_type VARCHAR(20) DEFAULT 'guest' CHECK (auth_type IN ('guest', 'friend', 'premium')),
+        auth_type VARCHAR(20) DEFAULT 'guest' CHECK (auth_type IN ('guest', 'friend', 'premium', 'admin')),
         daily_card_limit INTEGER DEFAULT 10,
         cards_generated_today INTEGER DEFAULT 0,
         api_calls_today INTEGER DEFAULT 0,
@@ -203,6 +203,14 @@ const authenticateToken = async (req, res, next) => {
   } catch (error) {
     return res.status(403).json({ error: 'Invalid token' });
   }
+};
+
+// Admin authorization middleware
+const requireAdmin = (req, res, next) => {
+  if (!req.user || req.user.auth_type !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
 };
 
 // Reset daily limits if needed
