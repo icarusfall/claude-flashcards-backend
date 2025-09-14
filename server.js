@@ -588,6 +588,111 @@ app.get('/subjects/:subjectId/study', authenticateToken, async (req, res) => {
   }
 });
 
+// Admin routes
+
+// Get all users (admin only)
+app.get('/admin/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        u.id, u.email, u.auth_type, u.daily_card_limit,
+        u.cards_generated_today, u.api_calls_today, u.last_reset_date, u.created_at,
+        COUNT(DISTINCT s.id) as subject_count,
+        COUNT(DISTINCT c.id) as total_cards,
+        COUNT(DISTINCT ucp.id) as cards_studied
+      FROM users u
+      LEFT JOIN subjects s ON u.id = s.user_id
+      LEFT JOIN cards c ON s.id = c.subject_id
+      LEFT JOIN user_card_progress ucp ON u.id = ucp.user_id
+      GROUP BY u.id
+      ORDER BY u.created_at DESC
+    `);
+
+    res.json({ users: result.rows });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Failed to get users' });
+  }
+});
+
+// Update user auth level (admin only)
+app.put('/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { authType, dailyCardLimit } = req.body;
+
+    if (!authType || !['guest', 'friend', 'premium', 'admin'].includes(authType)) {
+      return res.status(400).json({ error: 'Invalid auth type' });
+    }
+
+    const result = await pool.query(`
+      UPDATE users 
+      SET auth_type = $1, daily_card_limit = $2
+      WHERE id = $3 
+      RETURNING id, email, auth_type, daily_card_limit, created_at
+    `, [authType, dailyCardLimit || 10, userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ 
+      message: 'User updated successfully',
+      user: result.rows[0] 
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+// Get system stats (admin only)
+app.get('/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const [userStats, cardStats, activityStats] = await Promise.all([
+      // User stats
+      pool.query(`
+        SELECT 
+          auth_type,
+          COUNT(*) as count
+        FROM users 
+        GROUP BY auth_type
+      `),
+      
+      // Card stats
+      pool.query(`
+        SELECT 
+          COUNT(DISTINCT s.id) as total_subjects,
+          COUNT(DISTINCT c.id) as total_cards,
+          COUNT(DISTINCT ucp.id) as total_progress_records
+        FROM subjects s
+        LEFT JOIN cards c ON s.id = c.subject_id
+        LEFT JOIN user_card_progress ucp ON c.id = ucp.card_id
+      `),
+      
+      // Recent activity
+      pool.query(`
+        SELECT 
+          DATE(created_at) as date,
+          COUNT(*) as cards_generated
+        FROM cards 
+        WHERE created_at >= NOW() - INTERVAL '7 days'
+        GROUP BY DATE(created_at)
+        ORDER BY date DESC
+      `)
+    ]);
+
+    res.json({
+      usersByType: userStats.rows,
+      systemStats: cardStats.rows[0],
+      recentActivity: activityStats.rows
+    });
+  } catch (error) {
+    console.error('Get stats error:', error);
+    res.status(500).json({ error: 'Failed to get stats' });
+  }
+});
+
 // Update card progress after study session
 app.post('/cards/:cardId/progress', authenticateToken, async (req, res) => {
   try {
