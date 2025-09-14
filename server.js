@@ -144,6 +144,23 @@ const runMigrations = async () => {
       )
     `);
 
+    // Update auth_type constraint to include 'admin'
+    await pool.query(`
+      DO $$
+      BEGIN
+        -- Drop existing constraint if it exists
+        IF EXISTS (SELECT 1 FROM information_schema.check_constraints
+                  WHERE constraint_name = 'users_auth_type_check'
+                  AND table_name = 'users') THEN
+          ALTER TABLE users DROP CONSTRAINT users_auth_type_check;
+        END IF;
+
+        -- Add updated constraint
+        ALTER TABLE users ADD CONSTRAINT users_auth_type_check
+        CHECK (auth_type IN ('guest', 'friend', 'premium', 'admin'));
+      END $$;
+    `);
+
     // Create indexes for better performance
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_user_cards ON user_card_progress(user_id);
