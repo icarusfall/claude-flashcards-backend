@@ -149,9 +149,10 @@ const runMigrations = async () => {
       DO $$
       BEGIN
         -- Drop existing constraint if it exists
-        IF EXISTS (SELECT 1 FROM information_schema.check_constraints
+        IF EXISTS (SELECT 1 FROM information_schema.table_constraints
                   WHERE constraint_name = 'users_auth_type_check'
-                  AND table_name = 'users') THEN
+                  AND table_name = 'users'
+                  AND constraint_type = 'CHECK') THEN
           ALTER TABLE users DROP CONSTRAINT users_auth_type_check;
         END IF;
 
