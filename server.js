@@ -586,24 +586,37 @@ Make the flashcards appropriate for the level and varied in difficulty (mix of e
   }
 });
 
-// Get cards for study session (spaced repetition)
+// Get cards for study session (improved spaced repetition)
 app.get('/subjects/:subjectId/study', authenticateToken, async (req, res) => {
   try {
     const { subjectId } = req.params;
     const limit = parseInt(req.query.limit) || 20;
 
-    // Get cards due for review, ordered by next_review_date
+    // Get all cards with progress data, prioritizing cards that need more practice
     const result = await pool.query(`
-      SELECT c.*, 
+      SELECT c.*,
              COALESCE(ucp.correct_count, 0) as correct_count,
              COALESCE(ucp.incorrect_count, 0) as incorrect_count,
              COALESCE(ucp.confidence_level, 0.5) as confidence_level,
-             COALESCE(ucp.next_review_date, NOW()) as next_review_date
+             COALESCE(ucp.next_review_date, NOW()) as next_review_date,
+             COALESCE(ucp.last_seen, c.created_at) as last_seen,
+             -- Calculate priority score: lower confidence = higher priority
+             -- Recent incorrect answers = higher priority
+             -- Never studied cards = high priority
+             CASE
+               WHEN ucp.confidence_level IS NULL THEN 1.0  -- New cards get high priority
+               WHEN ucp.confidence_level < 0.3 THEN 0.9    -- Low confidence = high priority
+               WHEN ucp.confidence_level < 0.6 THEN 0.7    -- Medium confidence
+               WHEN ucp.confidence_level < 0.8 THEN 0.5    -- Good confidence
+               ELSE 0.3                                    -- High confidence = low priority
+             END +
+             -- Add randomization to avoid always showing same cards
+             (RANDOM() * 0.2) as priority_score
       FROM cards c
       LEFT JOIN user_card_progress ucp ON c.id = ucp.card_id AND ucp.user_id = $1
       WHERE c.subject_id = $2
-      AND (ucp.next_review_date IS NULL OR ucp.next_review_date <= NOW())
-      ORDER BY COALESCE(ucp.next_review_date, c.created_at) ASC
+      -- Remove time restrictions - allow unlimited reuse
+      ORDER BY priority_score DESC, RANDOM()
       LIMIT $3
     `, [req.user.id, subjectId, limit]);
 
@@ -725,41 +738,58 @@ app.post('/cards/:cardId/progress', authenticateToken, async (req, res) => {
     const { cardId } = req.params;
     const { correct } = req.body;
 
-    // Spaced repetition algorithm - simple version
-    const calculateNextReview = (correct, currentConfidence = 0.5) => {
-      let newConfidence = correct ? 
-        Math.min(1, currentConfidence + 0.1) : 
-        Math.max(0, currentConfidence - 0.2);
-      
-      // Calculate next review interval in hours
-      const baseInterval = correct ? 24 : 4; // 1 day vs 4 hours
-      const confidenceMultiplier = newConfidence * 2; // 0-2x multiplier
-      const intervalHours = Math.floor(baseInterval * confidenceMultiplier);
-      
+    // Improved spaced repetition algorithm focused on frequent review of difficult cards
+    const calculateNextReview = (correct, currentConfidence = 0.5, correctCount = 0, incorrectCount = 0) => {
+      // More aggressive confidence adjustment
+      let newConfidence;
+      if (correct) {
+        // Slower confidence increase for cards that were previously incorrect
+        const adjustment = incorrectCount > correctCount ? 0.05 : 0.1;
+        newConfidence = Math.min(1, currentConfidence + adjustment);
+      } else {
+        // More aggressive confidence decrease for incorrect answers
+        const adjustment = correctCount > incorrectCount ? 0.15 : 0.25;
+        newConfidence = Math.max(0, currentConfidence - adjustment);
+      }
+
+      // Since we removed time restrictions, we'll use a simpler approach
+      // The next_review_date is mainly for tracking, actual selection is done by priority_score
       const nextReview = new Date();
-      nextReview.setHours(nextReview.getHours() + Math.max(1, intervalHours));
-      
+      if (correct && newConfidence > 0.8) {
+        // Well-known cards can be reviewed less frequently
+        nextReview.setHours(nextReview.getHours() + 2);
+      } else if (correct && newConfidence > 0.6) {
+        // Moderately known cards
+        nextReview.setHours(nextReview.getHours() + 1);
+      } else {
+        // Difficult or new cards should be available immediately for frequent practice
+        nextReview.setMinutes(nextReview.getMinutes() + 5);
+      }
+
       return { newConfidence, nextReview };
     };
 
     // Get current progress
     const currentProgress = await pool.query(`
-      SELECT * FROM user_card_progress 
+      SELECT * FROM user_card_progress
       WHERE user_id = $1 AND card_id = $2
     `, [req.user.id, cardId]);
 
+    const existingProgress = currentProgress.rows[0];
     const { newConfidence, nextReview } = calculateNextReview(
-      correct, 
-      currentProgress.rows[0]?.confidence_level || 0.5
+      correct,
+      existingProgress?.confidence_level || 0.5,
+      existingProgress?.correct_count || 0,
+      existingProgress?.incorrect_count || 0
     );
 
     // Upsert progress record
     await pool.query(`
       INSERT INTO user_card_progress (
-        user_id, card_id, correct_count, incorrect_count, 
+        user_id, card_id, correct_count, incorrect_count,
         last_seen, next_review_date, confidence_level
       ) VALUES ($1, $2, $3, $4, NOW(), $5, $6)
-      ON CONFLICT (user_id, card_id) 
+      ON CONFLICT (user_id, card_id)
       DO UPDATE SET
         correct_count = user_card_progress.correct_count + $3,
         incorrect_count = user_card_progress.incorrect_count + $4,
@@ -768,7 +798,14 @@ app.post('/cards/:cardId/progress', authenticateToken, async (req, res) => {
         confidence_level = $6
     `, [req.user.id, cardId, correct ? 1 : 0, correct ? 0 : 1, nextReview, newConfidence]);
 
-    res.json({ success: true, nextReview, confidence: newConfidence });
+    res.json({
+      success: true,
+      nextReview,
+      confidence: newConfidence,
+      message: correct ?
+        (newConfidence > 0.8 ? 'Great! You know this well.' : 'Good job!') :
+        (newConfidence < 0.3 ? 'This card needs more practice.' : 'Keep practicing!')
+    });
   } catch (error) {
     console.error('Update progress error:', error);
     res.status(500).json({ error: 'Failed to update progress' });
