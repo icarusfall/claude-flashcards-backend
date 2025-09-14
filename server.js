@@ -627,6 +627,86 @@ app.get('/subjects/:subjectId/study', authenticateToken, async (req, res) => {
   }
 });
 
+// Delete a card
+app.delete('/cards/:cardId', authenticateToken, async (req, res) => {
+  try {
+    const { cardId } = req.params;
+
+    // First check if the card belongs to the user (via subject ownership)
+    const cardCheck = await pool.query(`
+      SELECT c.id, c.subject_id, s.user_id
+      FROM cards c
+      JOIN subjects s ON c.subject_id = s.id
+      WHERE c.id = $1
+    `, [cardId]);
+
+    if (cardCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Card not found' });
+    }
+
+    if (cardCheck.rows[0].user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized to delete this card' });
+    }
+
+    // Delete the card and its progress records
+    await pool.query('BEGIN');
+
+    try {
+      // Delete progress records first (foreign key constraint)
+      await pool.query('DELETE FROM user_card_progress WHERE card_id = $1', [cardId]);
+
+      // Delete the card
+      await pool.query('DELETE FROM cards WHERE id = $1', [cardId]);
+
+      await pool.query('COMMIT');
+
+      res.json({ success: true, message: 'Card deleted successfully' });
+    } catch (error) {
+      await pool.query('ROLLBACK');
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete card error:', error);
+    res.status(500).json({ error: 'Failed to delete card' });
+  }
+});
+
+// Get all cards for a subject (for management)
+app.get('/subjects/:subjectId/cards', authenticateToken, async (req, res) => {
+  try {
+    const { subjectId } = req.params;
+
+    // Check if subject belongs to user
+    const subjectCheck = await pool.query(
+      'SELECT id FROM subjects WHERE id = $1 AND user_id = $2',
+      [subjectId, req.user.id]
+    );
+
+    if (subjectCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Get all cards with progress data
+    const result = await pool.query(`
+      SELECT c.*,
+             COALESCE(ucp.correct_count, 0) as correct_count,
+             COALESCE(ucp.incorrect_count, 0) as incorrect_count,
+             COALESCE(ucp.confidence_level, 0.5) as confidence_level,
+             COALESCE(ucp.last_seen, c.created_at) as last_studied
+      FROM cards c
+      LEFT JOIN user_card_progress ucp ON c.id = ucp.card_id AND ucp.user_id = $1
+      WHERE c.subject_id = $2
+      ORDER BY c.created_at DESC
+    `, [req.user.id, subjectId]);
+
+    res.json({ cards: result.rows });
+  } catch (error) {
+    console.error('Get subject cards error:', error);
+    res.status(500).json({ error: 'Failed to get cards' });
+  }
+});
+
 // Admin routes
 
 // Get all users (admin only)
