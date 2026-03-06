@@ -189,6 +189,7 @@ const runMigrations = async () => {
 };
 
 // Middleware
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 
@@ -505,7 +506,7 @@ app.post('/subjects/:subjectId/generate-cards', generalLimiter, authenticateToke
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250514',
         max_tokens: 3000,
         messages: [{
           role: 'user',
